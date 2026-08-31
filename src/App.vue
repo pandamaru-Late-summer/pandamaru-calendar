@@ -276,7 +276,7 @@ onMounted(() => {
         <div 
           v-for="(day, index) in weekDays" 
           :key="day" 
-          :class="['weekday-label', { 'is-sun': index === 7, 'is-sat': index === 6 }]"
+          :class="['weekday-label', { 'is-sun': index === 6, 'is-sat': index === 5 }]"
         >
           {{ day }}
         </div>
