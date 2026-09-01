@@ -3,13 +3,15 @@ import { ref, computed, onMounted } from 'vue'
 import { CalendarEvent, DayCell, PastelColor } from './types'
 import { fetchEvents, createEvent, deleteEvent } from './api'
 
-// --- State ---
+// --- 状態管理 ---
 const currentDate = ref(new Date())
+const selectedDateStr = ref<string>(new Date().toISOString().split('T')[0])
 const events = ref<CalendarEvent[]>([])
 const isModalOpen = ref(false)
 const selectedEvent = ref<CalendarEvent | null>(null)
+const isSidebarOpen = ref(false) // レスポンシブ用サイドバートグル
 
-// フォーム用の状態
+// フォーム入力値
 const form = ref<{
   id?: string
   title: string
@@ -29,22 +31,35 @@ const form = ref<{
   color: 'lavender'
 })
 
-const colorOptions: { key: PastelColor; label: string; bg: string; text: string }[] = [
-  { key: 'sakura', label: 'サクラ', bg: '#FFE4E8', text: '#C84B68' },
-  { key: 'mint', label: 'ミント', bg: '#E2FBE8', text: '#2B8246' },
-  { key: 'lavender', label: 'ラベンダー', bg: '#EFE7FC', text: '#6D3EC4' },
-  { key: 'sky', label: 'スカイ', bg: '#E1F5FE', text: '#0277BD' },
-  { key: 'lemon', label: 'レモン', bg: '#FFF9C4', text: '#F57F17' },
+// パステルカラー定義（さらに優しいトーンに刷新）
+const colorOptions: { key: PastelColor; label: string; bg: string; text: string; border: string }[] = [
+  { key: 'sakura', label: 'サクラ', bg: '#FDE8ED', text: '#D14D72', border: '#FBC4D0' },
+  { key: 'mint', label: 'ミント', bg: '#E3F8EB', text: '#2E7D4E', border: '#B8ECCB' },
+  { key: 'lavender', label: 'ラベンダー', bg: '#F0EAFE', text: '#7048E8', border: '#D3BEFD' },
+  { key: 'sky', label: 'スカイ', bg: '#E1F3FD', text: '#1976D2', border: '#BBE3FC' },
+  { key: 'lemon', label: 'レモン', bg: '#FEF8DB', text: '#B78103', border: '#FCEEA7' },
 ]
 
-// --- カレンダーグリッド計算 ---
+// --- カレンダー計算（月曜始まり） ---
 const currentYear = computed(() => currentDate.value.getFullYear())
 const currentMonth = computed(() => currentDate.value.getMonth())
 const monthYearTitle = computed(() => {
   return currentDate.value.toLocaleDateString('ja-JP', { year: 'numeric', month: 'long' })
 })
 
-const weekDays = ['月', '火', '水', '木', '金', '土', '日']
+// 月曜始まりの曜日配列
+const weekDays = [
+  { label: '月', isWeekend: false },
+  { label: '火', isWeekend: false },
+  { label: '水', isWeekend: false },
+  { label: '木', isWeekend: false },
+  { label: '金', isWeekend: false },
+  { label: '土', isWeekend: true, type: 'sat' },
+  { label: '日', isWeekend: true, type: 'sun' },
+]
+
+// 月曜始まりのインデックス変換 (日:0->6, 月:1->0, 火:2->1, ... 土:6->5)
+const getMondayFirstDayIndex = (day: number) => (day + 6) % 7
 
 const calendarDays = computed(() => {
   const year = currentYear.value
@@ -53,15 +68,16 @@ const calendarDays = computed(() => {
   const firstDayOfMonth = new Date(year, month, 1)
   const lastDayOfMonth = new Date(year, month + 1, 0)
   
-  const startingDayOfWeek = firstDayOfMonth.getDay()
+  // 月曜始まりの開始オフセット
+  const startingDayOffset = getMondayFirstDayIndex(firstDayOfMonth.getDay())
   const totalDays = lastDayOfMonth.getDate()
 
   const days: DayCell[] = []
   const todayStr = new Date().toISOString().split('T')[0]
 
-  // 前月の日付埋め
+  // 1. 前月の日付埋め
   const prevMonthLastDay = new Date(year, month, 0).getDate()
-  for (let i = startingDayOfWeek - 1; i >= 0; i--) {
+  for (let i = startingDayOffset - 1; i >= 0; i--) {
     const d = new Date(year, month - 1, prevMonthLastDay - i)
     const dateStr = d.toISOString().split('T')[0]
     days.push({
@@ -74,7 +90,7 @@ const calendarDays = computed(() => {
     })
   }
 
-  // 当月の日付
+  // 2. 当月の日付
   for (let i = 1; i <= totalDays; i++) {
     const d = new Date(year, month, i)
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(i).padStart(2, '0')}`
@@ -88,7 +104,7 @@ const calendarDays = computed(() => {
     })
   }
 
-  // 翌月の日付埋め (6週間=42マス固定)
+  // 3. 翌月の日付埋め (6週グリッド: 計42マス)
   const remaining = 42 - days.length
   for (let i = 1; i <= remaining; i++) {
     const d = new Date(year, month + 1, i)
@@ -106,13 +122,17 @@ const calendarDays = computed(() => {
   return days
 })
 
-// 当日の全イベント（サイドバー用）
-const todayEvents = computed(() => {
-  const todayStr = new Date().toISOString().split('T')[0]
-  return events.value.filter(e => e.start_time.startsWith(todayStr))
+// 選択中の日付のイベント一覧（サイドバーに表示）
+const selectedDateEvents = computed(() => {
+  return events.value.filter(e => e.start_time.startsWith(selectedDateStr.value))
 })
 
-// --- アクション ---
+const selectedDateLabel = computed(() => {
+  const d = new Date(selectedDateStr.value + 'T00:00:00')
+  return d.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', weekday: 'short' })
+})
+
+// --- 操作ハンドラー ---
 const loadData = async () => {
   const data = await fetchEvents()
   if (data && data.length > 0) {
@@ -129,16 +149,24 @@ const nextMonth = () => {
 }
 
 const goToToday = () => {
-  currentDate.value = new Date()
+  const now = new Date()
+  currentDate.value = now
+  selectedDateStr.value = now.toISOString().split('T')[0]
 }
 
-// モーダルを開く（新規作成）
+const selectDay = (dateStr: string) => {
+  selectedDateStr.value = dateStr
+}
+
+// モーダル操作
 const openAddModal = (dateStr?: string) => {
   selectedEvent.value = null
+  const targetDate = dateStr || selectedDateStr.value || new Date().toISOString().split('T')[0]
+  selectedDateStr.value = targetDate
   form.value = {
     title: '',
     description: '',
-    date: dateStr || new Date().toISOString().split('T')[0],
+    date: targetDate,
     startTime: '09:00',
     endTime: '10:00',
     isAllDay: false,
@@ -147,7 +175,6 @@ const openAddModal = (dateStr?: string) => {
   isModalOpen.value = true
 }
 
-// モーダルを開く（詳細・編集）
 const openDetailModal = (event: CalendarEvent, e: MouseEvent) => {
   e.stopPropagation()
   selectedEvent.value = event
@@ -196,11 +223,7 @@ const handleSave = async () => {
     const created = await createEvent(payload)
     events.value.push(created)
   } catch {
-    // オフライン・モック用 fallback
-    events.value.push({
-      id: crypto.randomUUID(),
-      ...payload
-    })
+    events.value.push({ id: crypto.randomUUID(), ...payload })
   }
 
   closeModal()
@@ -210,9 +233,7 @@ const handleDelete = async () => {
   if (!selectedEvent.value) return
   try {
     await deleteEvent(selectedEvent.value.id)
-  } catch {
-    // mock delete
-  }
+  } catch {}
   events.value = events.value.filter(e => e.id !== selectedEvent.value?.id)
   closeModal()
 }
@@ -223,146 +244,177 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="calendar-app">
+  <div class="app-layout">
+    <!-- モバイル用バックドロップ -->
+    <div 
+      v-if="isSidebarOpen" 
+      class="sidebar-backdrop" 
+      @click="isSidebarOpen = false"
+    ></div>
+
     <!-- サイドバー -->
-    <aside class="sidebar">
-      <div class="app-logo">
-        <div class="logo-icon">🌸</div>
-        <h2>Pastel Plan</h2>
+    <aside :class="['sidebar', { 'is-open': isSidebarOpen }]">
+      <div class="sidebar-header">
+        <div class="brand">
+          <span class="brand-badge">🌸</span>
+          <span class="brand-text">Pastel Plan</span>
+        </div>
+        <button class="btn-close-sidebar" @click="isSidebarOpen = false">✕</button>
       </div>
 
-      <button class="btn-create" @click="openAddModal()">
-        <span class="plus-icon">＋</span> 新しい予定
+      <button class="btn-new-event" @click="openAddModal()">
+        <span class="btn-new-icon">+</span> 新しい予定
       </button>
 
-      <div class="today-section">
-        <h3>今日のスケジュール</h3>
-        <div v-if="todayEvents.length === 0" class="empty-state">
-          予定はありません ☕️
+      <!-- 選択日のイベントリスト -->
+      <div class="day-events-panel">
+        <div class="panel-header">
+          <h3>{{ selectedDateLabel }} の予定</h3>
+          <span class="badge-count">{{ selectedDateEvents.length }}</span>
         </div>
-        <ul v-else class="today-list">
-          <li 
-            v-for="ev in todayEvents" 
-            :key="ev.id" 
-            :class="['today-card', `tag-${ev.color}`]"
+
+        <div v-if="selectedDateEvents.length === 0" class="empty-placeholder">
+          <span class="empty-icon">☕️</span>
+          <p>予定がありません</p>
+        </div>
+
+        <ul v-else class="event-scroll-list">
+          <li
+            v-for="ev in selectedDateEvents"
+            :key="ev.id"
+            :class="['event-card-item', `color-${ev.color}`]"
             @click="openDetailModal(ev, $event)"
           >
-            <span class="today-time">
-              {{ ev.is_all_day ? '終日' : ev.start_time.split('T')[1]?.slice(0, 5) }}
-            </span>
-            <span class="today-title">{{ ev.title }}</span>
+            <div class="event-card-time">
+              {{ ev.is_all_day ? '終日' : `${ev.start_time.split('T')[1]?.slice(0, 5)} - ${ev.end_time.split('T')[1]?.slice(0, 5)}` }}
+            </div>
+            <div class="event-card-title">{{ ev.title }}</div>
+            <div v-if="ev.description" class="event-card-desc">{{ ev.description }}</div>
           </li>
         </ul>
       </div>
     </aside>
 
-    <!-- メインカレンダー領域 -->
-    <main class="main-content">
-      <!-- ヘッダーツールバー -->
-      <header class="header">
-        <div class="month-title-group">
-          <h1>{{ monthYearTitle }}</h1>
-          <button class="btn-today" @click="goToToday">今日</button>
+    <!-- メインコンテンツ -->
+    <main class="main-wrapper">
+      <!-- トップナビゲーションバー -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="btn-menu-toggle" @click="isSidebarOpen = true">☰</button>
+          <h1 class="current-month-label">{{ monthYearTitle }}</h1>
+          <button class="btn-pill" @click="goToToday">今月</button>
         </div>
 
-        <div class="nav-controls">
-          <button class="btn-icon" @click="prevMonth">‹</button>
-          <button class="btn-icon" @click="nextMonth">›</button>
+        <div class="topbar-right">
+          <div class="nav-button-group">
+            <button class="nav-btn" @click="prevMonth">‹</button>
+            <button class="nav-btn" @click="nextMonth">›</button>
+          </div>
         </div>
       </header>
 
-      <!-- 曜日ヘッダー -->
-      <div class="weekdays-grid">
-        <div 
-          v-for="(day, index) in weekDays" 
-          :key="day" 
-          :class="['weekday-label', { 'is-sun': index === 6, 'is-sat': index === 5 }]"
+      <!-- 曜日ヘッダー (月曜始まり) -->
+      <div class="weekdays-bar">
+        <div
+          v-for="w in weekDays"
+          :key="w.label"
+          :class="['weekday-col', { 'is-sat': w.type === 'sat', 'is-sun': w.type === 'sun' }]"
         >
-          {{ day }}
+          {{ w.label }}
         </div>
       </div>
 
-      <!-- 日付グリッド -->
-      <div class="days-grid">
-        <div
-          v-for="cell in calendarDays"
-          :key="cell.dateString"
-          :class="[
-            'day-cell',
-            { 'other-month': !cell.isCurrentMonth, 'is-today': cell.isToday }
-          ]"
-          @click="openAddModal(cell.dateString)"
-        >
-          <div class="cell-top">
-            <span :class="['day-number', { 'today-badge': cell.isToday }]">
-              {{ cell.dayNumber }}
-            </span>
-          </div>
+      <!-- 月間グリッド -->
+      <div class="calendar-grid-container">
+        <div class="calendar-grid">
+          <div
+            v-for="cell in calendarDays"
+            :key="cell.dateString"
+            :class="[
+              'date-cell',
+              {
+                'not-current-month': !cell.isCurrentMonth,
+                'is-today': cell.isToday,
+                'is-selected': cell.dateString === selectedDateStr
+              }
+            ]"
+            @click="selectDay(cell.dateString)"
+            @dblclick="openAddModal(cell.dateString)"
+          >
+            <div class="date-cell-header">
+              <span class="day-number-badge">{{ cell.dayNumber }}</span>
+            </div>
 
-          <!-- イベントバッジ一覧 -->
-          <div class="cell-events">
-            <div
-              v-for="ev in cell.events"
-              :key="ev.id"
-              :class="['event-badge', `tag-${ev.color}`]"
-              @click="openDetailModal(ev, $event)"
-            >
-              <span v-if="!ev.is_all_day" class="event-time">
-                {{ ev.start_time.split('T')[1]?.slice(0, 5) }}
+            <!-- イベントタグリスト -->
+            <div class="date-cell-events">
+              <div
+                v-for="ev in cell.events.slice(0, 3)"
+                :key="ev.id"
+                :class="['event-chip', `color-${ev.color}`]"
+                @click="openDetailModal(ev, $event)"
+              >
+                <span v-if="!ev.is_all_day" class="chip-time">
+                  {{ ev.start_time.split('T')[1]?.slice(0, 5) }}
+                </span>
+                <span class="chip-text">{{ ev.title }}</span>
+              </div>
+
+              <!-- 3件を超える場合の +N件 表示 -->
+              <span v-if="cell.events.length > 3" class="more-badge">
+                +他 {{ cell.events.length - 3 }} 件
               </span>
-              <span class="event-badge-title">{{ ev.title }}</span>
             </div>
           </div>
         </div>
       </div>
     </main>
 
-    <!-- 予定作成・詳細モーダル -->
-    <div v-if="isModalOpen" class="modal-overlay" @click.self="closeModal">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3>{{ selectedEvent ? '予定の詳細・編集' : '新しい予定を作成' }}</h3>
-          <button class="btn-close" @click="closeModal">✕</button>
+    <!-- 予定作成・編集モーダル -->
+    <div v-if="isModalOpen" class="modal-backdrop" @click.self="closeModal">
+      <div class="modal-window">
+        <div class="modal-top">
+          <h3>{{ selectedEvent ? '予定の編集' : '新しい予定' }}</h3>
+          <button class="btn-icon-close" @click="closeModal">✕</button>
         </div>
 
-        <div class="modal-body">
-          <div class="form-group">
+        <div class="modal-fields">
+          <div class="field-item">
             <label>タイトル</label>
-            <input v-model="form.title" type="text" placeholder="ミーティング、買い物など" />
+            <input v-model="form.title" type="text" placeholder="予定名を入力" autofocus />
           </div>
 
-          <div class="form-row">
-            <div class="form-group">
+          <div class="field-row">
+            <div class="field-item flex-2">
               <label>日付</label>
               <input v-model="form.date" type="date" />
             </div>
-            <div class="form-group checkbox-group">
-              <label>
-                <input v-model="form.isAllDay" type="checkbox" /> 終日
+            <div class="field-item flex-1 checkbox-field">
+              <label class="custom-checkbox">
+                <input v-model="form.isAllDay" type="checkbox" />
+                <span class="checkbox-label">終日</span>
               </label>
             </div>
           </div>
 
-          <div v-if="!form.isAllDay" class="form-row">
-            <div class="form-group">
+          <div v-if="!form.isAllDay" class="field-row">
+            <div class="field-item flex-1">
               <label>開始時間</label>
               <input v-model="form.startTime" type="time" />
             </div>
-            <div class="form-group">
+            <div class="field-item flex-1">
               <label>終了時間</label>
               <input v-model="form.endTime" type="time" />
             </div>
           </div>
 
-          <!-- カラー選択パレット -->
-          <div class="form-group">
-            <label>カラータグ</label>
-            <div class="color-picker">
+          <div class="field-item">
+            <label>パステルカラー</label>
+            <div class="color-palette-selector">
               <button
                 v-for="c in colorOptions"
                 :key="c.key"
                 type="button"
-                :class="['color-swatch', `tag-${c.key}`, { active: form.color === c.key }]"
+                :class="['color-pill', `color-${c.key}`, { active: form.color === c.key }]"
                 @click="form.color = c.key"
               >
                 {{ c.label }}
@@ -370,20 +422,20 @@ onMounted(() => {
             </div>
           </div>
 
-          <div class="form-group">
-            <label>メモ / 説明</label>
-            <textarea v-model="form.description" rows="3" placeholder="詳細を入力"></textarea>
+          <div class="field-item">
+            <label>メモ</label>
+            <textarea v-model="form.description" rows="3" placeholder="メモや詳細を追加"></textarea>
           </div>
         </div>
 
-        <div class="modal-footer">
-          <button v-if="selectedEvent" class="btn-delete" @click="handleDelete">
+        <div class="modal-actions">
+          <button v-if="selectedEvent" class="btn-action-delete" @click="handleDelete">
             削除
           </button>
           <div class="spacer"></div>
-          <button class="btn-cancel" @click="closeModal">キャンセル</button>
-          <button class="btn-primary" @click="handleSave">
-            {{ selectedEvent ? '更新' : '保存' }}
+          <button class="btn-action-cancel" @click="closeModal">キャンセル</button>
+          <button class="btn-action-save" @click="handleSave">
+            {{ selectedEvent ? '更新する' : '追加する' }}
           </button>
         </div>
       </div>
@@ -392,254 +444,368 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* --- 全体レイアウト --- */
-.calendar-app {
+/* ==========================================================================
+   パステルトーン・カラーシステム
+   ========================================================================== */
+.color-sakura { background: #fde8ed; color: #d14d72; border: 1px solid #fbc4d0; }
+.color-mint { background: #e3f8eb; color: #2e7d4e; border: 1px solid #b8eccb; }
+.color-lavender { background: #f0eaff; color: #7048e8; border: 1px solid #d3befd; }
+.color-sky { background: #e1f3fd; color: #1976d2; border: 1px solid #bbe3fc; }
+.color-lemon { background: #fef8db; color: #b78103; border: 1px solid #fceea7; }
+
+/* ==========================================================================
+   全体レイアウト & ベース設定
+   ========================================================================== */
+.app-layout {
   display: flex;
   height: 100vh;
   width: 100vw;
-  background-color: #f7f9fc;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #fbfbfe;
   color: #334155;
-  user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow: hidden;
+  position: relative;
 }
 
-/* --- パステルタグカラー定義 --- */
-.tag-sakura { background: #ffe4e8; color: #c84b68; }
-.tag-mint { background: #e2fbe8; color: #2b8246; }
-.tag-lavender { background: #efe7fc; color: #6d3ec4; }
-.tag-sky { background: #e1f5fe; color: #0277bd; }
-.tag-lemon { background: #fff9c4; color: #b78103; }
-
-/* --- サイドバー --- */
+/* ==========================================================================
+   サイドバー
+   ========================================================================== */
 .sidebar {
-  width: 280px;
+  width: 300px;
+  min-width: 300px;
   background: #ffffff;
-  border-right: 1px solid #eef2f6;
-  padding: 24px 20px;
+  border-right: 1px solid #f0f3f8;
   display: flex;
   flex-direction: column;
-  box-shadow: 2px 0 10px rgba(0,0,0,0.02);
+  padding: 24px 20px;
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.02);
+  z-index: 20;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.app-logo {
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 24px;
-}
-.logo-icon {
-  font-size: 24px;
-}
-.app-logo h2 {
-  font-size: 20px;
-  font-weight: 700;
-  color: #475569;
-  margin: 0;
 }
 
-.btn-create {
-  background: #7c4dff;
+.brand-badge {
+  font-size: 22px;
+}
+
+.brand-text {
+  font-size: 19px;
+  font-weight: 700;
+  color: #1e293b;
+  letter-spacing: -0.3px;
+}
+
+.btn-close-sidebar {
+  display: none;
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.btn-new-event {
   background: linear-gradient(135deg, #a78bfa 0%, #818cf8 100%);
   color: white;
   border: none;
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 12px 18px;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  box-shadow: 0 4px 12px rgba(167, 139, 250, 0.35);
-  transition: all 0.2s ease;
-}
-.btn-create:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(167, 139, 250, 0.45);
+  box-shadow: 0 8px 18px rgba(167, 139, 250, 0.3);
+  transition: transform 0.15s, box-shadow 0.15s;
 }
 
-.today-section {
-  margin-top: 32px;
-  flex: 1;
-  overflow-y: auto;
+.btn-new-event:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px rgba(167, 139, 250, 0.4);
 }
-.today-section h3 {
-  font-size: 14px;
-  color: #94a3b8;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+
+.btn-new-icon {
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.day-events-panel {
+  margin-top: 28px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: 12px;
 }
-.empty-state {
-  font-size: 13px;
-  color: #94a3b8;
-  text-align: center;
-  padding: 20px 0;
+
+.panel-header h3 {
+  font-size: 14px;
+  font-weight: 700;
+  color: #64748b;
+  margin: 0;
 }
-.today-list {
+
+.badge-count {
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.empty-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  font-size: 13px;
+  gap: 6px;
+}
+
+.empty-icon {
+  font-size: 28px;
+  opacity: 0.8;
+}
+
+.event-scroll-list {
   list-style: none;
   padding: 0;
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-.today-card {
-  padding: 10px 14px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: transform 0.15s ease;
-}
-.today-card:hover {
-  transform: scale(1.02);
-}
-.today-time {
-  display: block;
-  font-size: 11px;
-  font-weight: 600;
-  opacity: 0.8;
-}
-.today-title {
-  font-size: 13px;
-  font-weight: 600;
+  gap: 10px;
+  overflow-y: auto;
 }
 
-/* --- メインコンテンツ --- */
-.main-content {
+.event-card-item {
+  padding: 12px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.event-card-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.event-card-time {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.85;
+  margin-bottom: 2px;
+}
+
+.event-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.event-card-desc {
+  font-size: 12px;
+  opacity: 0.8;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==========================================================================
+   メインエリア
+   ========================================================================== */
+.main-wrapper {
   flex: 1;
   display: flex;
   flex-direction: column;
   padding: 20px 24px;
-  overflow: hidden;
+  min-width: 0;
 }
 
-.header {
+.topbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 16px;
 }
-.month-title-group {
+
+.topbar-left {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
 }
-.month-title-group h1 {
-  font-size: 24px;
-  font-weight: 700;
+
+.btn-menu-toggle {
+  display: none;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.current-month-label {
+  font-size: 22px;
+  font-weight: 800;
   color: #1e293b;
   margin: 0;
+  letter-spacing: -0.5px;
 }
 
-.btn-today {
+.btn-pill {
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  padding: 6px 14px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
   color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 20px;
   cursor: pointer;
-  transition: background 0.15s;
-}
-.btn-today:hover {
-  background: #f1f5f9;
+  transition: all 0.15s;
 }
 
-.nav-controls {
+.btn-pill:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.nav-button-group {
   display: flex;
   gap: 6px;
 }
-.btn-icon {
+
+.nav-btn {
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   font-size: 18px;
+  font-weight: 500;
+  color: #475569;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #475569;
   transition: all 0.15s;
 }
-.btn-icon:hover {
+
+.nav-btn:hover {
   background: #f8fafc;
-  color: #1e293b;
+  border-color: #cbd5e1;
 }
 
-/* 曜日ラベル */
-.weekdays-grid {
+/* 曜日ヘッダー */
+.weekdays-bar {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  padding: 8px 0;
+  padding: 10px 0;
   text-align: center;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   color: #64748b;
 }
-.weekday-label.is-sun { color: #f43f5e; }
-.weekday-label.is-sat { color: #0284c7; }
 
-/* カレンダーマス目 */
-.days-grid {
+.weekday-col.is-sat { color: #0284c7; }
+.weekday-col.is-sun { color: #f43f5e; }
+
+/* グリッド本体 */
+.calendar-grid-container {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.calendar-grid {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  grid-template-rows: repeat(6, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: repeat(6, minmax(0, 1fr));
   gap: 6px;
   min-height: 0;
 }
-.day-cell {
+
+.date-cell {
   background: #ffffff;
   border-radius: 12px;
-  padding: 8px;
+  padding: 6px 8px;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.02);
   border: 1px solid #f1f5f9;
   cursor: pointer;
+  transition: all 0.15s ease;
   overflow: hidden;
-  transition: border-color 0.15s;
 }
-.day-cell:hover {
+
+.date-cell:hover {
   border-color: #cbd5e1;
 }
-.day-cell.other-month {
-  background: #fafbfc;
-  opacity: 0.45;
+
+.date-cell.not-current-month {
+  background: #fbfcfe;
+  opacity: 0.4;
 }
-.cell-top {
+
+.date-cell.is-selected {
+  border-color: #a78bfa;
+  box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.2);
+}
+
+.date-cell-header {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 4px;
 }
-.day-number {
+
+.day-number-badge {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   color: #475569;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
 }
-.today-badge {
+
+.date-cell.is-today .day-number-badge {
   background: #818cf8;
-  color: #ffffff !important;
+  color: #ffffff;
 }
 
-/* イベントバッジ */
-.cell-events {
+.date-cell-events {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  overflow-y: auto;
+  overflow: hidden;
 }
-.event-badge {
+
+.event-chip {
   font-size: 11px;
   font-weight: 600;
   padding: 2px 6px;
@@ -651,43 +817,66 @@ onMounted(() => {
   align-items: center;
   gap: 4px;
 }
-.event-time {
-  font-size: 10px;
-  opacity: 0.8;
+
+.chip-time {
+  font-size: 9px;
+  opacity: 0.85;
 }
 
-/* --- モーダル --- */
-.modal-overlay {
+.chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.more-badge {
+  font-size: 10px;
+  color: #94a3b8;
+  font-weight: 600;
+  padding-left: 2px;
+}
+
+/* ==========================================================================
+   モーダル
+   ========================================================================== */
+.modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.4);
-  backdrop-filter: blur(4px);
+  background: rgba(15, 23, 42, 0.35);
+  backdrop-filter: blur(5px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
+  padding: 16px;
 }
-.modal-card {
+
+.modal-window {
   background: #ffffff;
-  width: 440px;
-  border-radius: 16px;
+  width: 100%;
+  max-width: 440px;
+  border-radius: 20px;
   padding: 24px;
-  box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
-.modal-header {
+
+.modal-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-.modal-header h3 {
+
+.modal-top h3 {
   margin: 0;
   font-size: 18px;
+  font-weight: 700;
   color: #1e293b;
 }
-.btn-close {
+
+.btn-icon-close {
   background: none;
   border: none;
   font-size: 16px;
@@ -695,95 +884,197 @@ onMounted(() => {
   cursor: pointer;
 }
 
-.modal-body {
+.modal-fields {
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
-.form-group {
+
+.field-item {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.form-group label {
+
+.field-item label {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   color: #64748b;
 }
-.form-group input[type="text"],
-.form-group input[type="date"],
-.form-group input[type="time"],
-.form-group textarea {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 8px 12px;
+
+.field-item input[type="text"],
+.field-item input[type="date"],
+.field-item input[type="time"],
+.field-item textarea {
+  border: 1.5px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
   font-size: 14px;
   outline: none;
-  color: #334155;
-}
-.form-group input:focus,
-.form-group textarea:focus {
-  border-color: #a78bfa;
-}
-.form-row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-.checkbox-group {
-  margin-top: 20px;
+  color: #1e293b;
+  transition: border-color 0.15s;
 }
 
-/* カラーセレクター */
-.color-picker {
+.field-item input:focus,
+.field-item textarea:focus {
+  border-color: #a78bfa;
+}
+
+.field-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.flex-1 { flex: 1; }
+.flex-2 { flex: 2; }
+
+.checkbox-field {
+  padding-bottom: 10px;
+}
+
+.custom-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.checkbox-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.color-palette-selector {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
-.color-swatch {
-  border: 2px solid transparent;
+
+.color-pill {
   border-radius: 8px;
-  padding: 6px 10px;
+  padding: 6px 12px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
   transition: all 0.15s;
 }
-.color-swatch.active {
-  border-color: #475569;
+
+.color-pill.active {
+  box-shadow: 0 0 0 2px #475569;
   transform: translateY(-2px);
 }
 
-.modal-footer {
+.modal-actions {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-top: 8px;
 }
+
 .spacer { flex: 1; }
-.btn-primary {
+
+.btn-action-save {
   background: #818cf8;
   color: white;
   border: none;
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-weight: 600;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-weight: 700;
   cursor: pointer;
+  transition: background 0.15s;
 }
-.btn-cancel {
+
+.btn-action-save:hover {
+  background: #6366f1;
+}
+
+.btn-action-cancel {
   background: #f1f5f9;
   color: #475569;
   border: none;
-  padding: 8px 14px;
-  border-radius: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 600;
   cursor: pointer;
 }
-.btn-delete {
+
+.btn-action-delete {
   background: #fee2e2;
   color: #dc2626;
   border: none;
-  padding: 8px 14px;
-  border-radius: 8px;
-  font-weight: 600;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 700;
   cursor: pointer;
+}
+
+/* ==========================================================================
+   レスポンシブ対応 (ブレイクポイント: 900px, 600px)
+   ========================================================================== */
+@media (max-width: 900px) {
+  .btn-menu-toggle {
+    display: block;
+  }
+
+  .btn-close-sidebar {
+    display: block;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    transform: translateX(-100%);
+    box-shadow: 10px 0 30px rgba(0, 0, 0, 0.1);
+  }
+
+  .sidebar.is-open {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.3);
+    backdrop-filter: blur(2px);
+    z-index: 15;
+  }
+
+  .main-wrapper {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar-left h1 {
+    font-size: 18px;
+  }
+
+  .weekdays-bar {
+    font-size: 11px;
+  }
+
+  .date-cell {
+    padding: 2px 4px;
+    border-radius: 8px;
+  }
+
+  .day-number-badge {
+    width: 20px;
+    height: 20px;
+    font-size: 10px;
+  }
+
+  .event-chip {
+    font-size: 9px;
+    padding: 1px 3px;
+  }
+
+  .chip-time {
+    display: none;
+  }
 }
 </style>
